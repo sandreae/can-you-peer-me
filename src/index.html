@@ -1,39 +1,39 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="stylesheet" href="styles.css" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
-    <script type="module" src="/main.js" defer></script>
-  </head>
 
-  <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sample Player with Web Audio API</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
 
-      <div class="row">
-        <a href="https://tauri.app" target="_blank">
-          <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-        </a>
-        <a
-          href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"
-          target="_blank"
-        >
-          <img
-            src="/assets/javascript.svg"
-            class="logo vanilla"
-            alt="JavaScript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+<body>
+  <div class="grid-item" onclick="broadcastSample(0)"></div>
+  <div class="grid-item" onclick="broadcastSample(1)"></div>
+  <div class="grid-item" onclick="broadcastSample(2)"></div>
+  <div class="grid-item" onclick="broadcastSample(3)"></div>
+  <div class="grid-item" onclick="broadcastSample(4)"></div>
+  <div class="grid-item" onclick="broadcastSample(5)"></div>
+  <div class="grid-item" onclick="broadcastSample(6)"></div>
+  <div class="grid-item" onclick="broadcastSample(7)"></div>
+  <div class="grid-item" onclick="broadcastSample(8)"></div>
+  <div class="grid-item" onclick="broadcastSample(9)"></div>
+  <div class="grid-item" onclick="broadcastSample(10)"></div>
+  <div class="grid-item" onclick="broadcastSample(11)"></div>
+  <div class="grid-item" onclick="broadcastSample(12)"></div>
+  <div class="grid-item" onclick="broadcastSample(13)"></div>
+  <div class="grid-item" onclick="broadcastSample(14)"></div>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-    </main>
-  </body>
+  <script src="./main.js" defer></script>
+  <!-- <script defer>
+    function broadcast(index) {
+      invoke("broadcast", { index });
+    }
+  </script> -->
+  <!-- <script type="module">
+    import { broadcast } from "./main.js";
+  </script> -->
+</body>
+
 </html>

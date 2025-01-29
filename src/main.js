@@ -1,33 +1,5 @@
 const { invoke, Channel } = window.__TAURI__.core;
 
-const peers = new Object();
-
-async function init() {
-  // Load all samples
-  samplePaths.forEach(async (path, index) => {
-    console.log("load sample", path);
-    await loadSample(path, index);
-  });
-
-  // Create the stream channel to be passed to backend and add an `onMessage`
-  // callback method to handle any events which are later sent from the
-  // backend to here.
-  const channel = new Channel();
-  channel.onmessage = processor;
-  // The start command must be called on app startup otherwise running the node
-  // on the backend is blocked. This is because we need the stream channel to
-  // be provided and passed into the node stream receiver task.
-  await invoke("init", { channel });
-}
-
-window.addEventListener("DOMContentLoaded", () => {
-  console.log("init");
-  init();
-});
-
-// Create an audio context
-const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
 // List of sample filenames
 const samplePaths = [
   "./assets/528683__kjose__metalpot_strongfingertap2.flac",
@@ -53,8 +25,32 @@ const samplePaths = [
   "./assets/196124__enma-darei__dropped-stuff.wav",
 ];
 
+// Create an audio context
+const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
 // Array to hold the audio buffers
 const audioBuffers = [];
+
+// Map of peers we have learned about
+const peers = new Object();
+
+async function init() {
+  // Load all samples
+  samplePaths.forEach(async (path, index) => {
+    console.log("load sample", path);
+    await loadSample(path, index);
+  });
+
+  // Create the stream channel to be passed to backend and add an `onMessage`
+  // callback method to handle any events which are later sent from the
+  // backend to here.
+  const channel = new Channel();
+  channel.onmessage = processor;
+  // The start command must be called on app startup otherwise running the node
+  // on the backend is blocked. This is because we need the stream channel to
+  // be provided and passed into the node stream receiver task.
+  await invoke("init", { channel });
+}
 
 // Function to load an audio sample
 async function loadSample(url, index) {
@@ -76,17 +72,17 @@ function playSample(index) {
   return source;
 }
 
-function broadcastSample(index) {
+// Function to publish a sample play event
+function publish(index) {
   let timestamp = Date.now();
-
-  console.log("broadcast: ", timestamp, index);
-  invoke("broadcast", { timestamp, index });
+  invoke("publish", { timestamp, index });
 }
 
+// Processor which should handle all events arriving from the backend node
 function processor(message) {
   switch (message.type) {
     case "SamplePlayed": {
-      playSample(message.index);
+      handleAppEvent(message);
       break;
     }
     case "SystemEvent": {
@@ -96,7 +92,16 @@ function processor(message) {
   }
 }
 
+// Handler for application events
+function handleAppEvent(event) {
+  console.log("Hit: ", event.index);
+  playSample(event.index);
+}
+
+// Handler for system events
 function handleSystemEvent(event) {
+  console.log(event);
+
   switch (event.type) {
     case "GossipJoined":
       playSample(17);
@@ -106,12 +111,10 @@ function handleSystemEvent(event) {
       break;
 
     case "GossipNeighborUp":
-      console.log(event);
       playSample(18);
       break;
 
     case "GossipNeighborDown":
-      console.log(event);
       playSample(19);
       break;
 

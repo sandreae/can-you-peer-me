@@ -56,7 +56,7 @@ async fn init(
 }
 
 #[tauri::command]
-async fn broadcast(
+async fn publish(
     state: State<'_, Mutex<AppContext>>,
     timestamp: u64,
     index: u16,
@@ -76,7 +76,7 @@ async fn broadcast(
         .await
         .expect("send on topic_tx channel");
 
-    println!("broadcast message: {}", index);
+    println!("publish message: {}", index);
 
     Ok(())
 }
@@ -89,7 +89,7 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![init, broadcast])
+        .invoke_handler(tauri::generate_handler![init, publish])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

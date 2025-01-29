@@ -1,5 +1,5 @@
-mod sync;
 mod messages;
+mod sync;
 
 use std::hash::Hash as StdHash;
 
@@ -13,13 +13,13 @@ use p2panda_net::{
 use p2panda_sync::TopicQuery;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
-use tauri::{Builder, Error, Manager, State};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tauri::{App, Builder, Error, Manager, State};
+use tokio::sync::{mpsc, Mutex};
 
 use messages::{ChannelEvent, SystemEvent};
 
-static network_id: [u8; 32] = [0; 32];
-static app_topic: AppTopic = AppTopic([1; 32]);
+static NETWORK_ID: [u8; 32] = [0; 32];
+static APP_TOPIC: AppTopic = AppTopic([1; 32]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, StdHash, Serialize, Deserialize)]
 struct AppTopic([u8; 32]);
@@ -34,6 +34,7 @@ impl TopicQuery for AppTopic {}
 
 struct AppContext {
     channel_init_tx: mpsc::Sender<Channel<ChannelEvent>>,
+    #[allow(dead_code)]
     network: Network<AppTopic>,
     topic_tx: mpsc::Sender<ToNetwork>,
     app_tx: mpsc::Sender<(u64, u16)>,
@@ -84,51 +85,7 @@ async fn broadcast(
 pub fn run() {
     Builder::default()
         .setup(|app| {
-            let app_handle = app.handle().clone();
-
-            tauri::async_runtime::spawn(async move {
-                let private_key = PrivateKey::new();
-
-                let mdns = LocalDiscovery::new();
-                let sync_protocol = sync::DummyProtocol {};
-                let resync_config = ResyncConfiguration::new().interval(10);
-                let sync_config = SyncConfiguration::new(sync_protocol).resync(resync_config);
-
-                let network = NetworkBuilder::new(network_id)
-                    .discovery(mdns)
-                    .sync(sync_config)
-                    .private_key(private_key.clone())
-                    .build()
-                    .await
-                    .expect("build network");
-
-                let system_events_rx = network
-                    .events()
-                    .await
-                    .expect("subscribe to network system status event stream");
-
-                let (topic_tx, topic_rx, _topic_ready) = network
-                    .subscribe(app_topic)
-                    .await
-                    .expect("subscribe to topic");
-
-                let (channel_init_tx, channel_init_rx) = mpsc::channel(32);
-                let (app_tx, app_rx) = mpsc::channel(32);
-
-                app_handle.manage(Mutex::new(AppContext {
-                    channel_init_tx,
-                    network,
-                    topic_tx,
-                    app_tx,
-                }));
-
-                if let Err(err) =
-                    forward_to_app_layer(channel_init_rx, topic_rx, app_rx, system_events_rx).await
-                {
-                    panic!("failed to start node receiver task: {err}")
-                };
-            });
-
+            spawn_node(app)?;
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
@@ -137,20 +94,36 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Task for receiving data from network and forwarding them up to the app layer.
-async fn forward_to_app_layer(
-    mut channel_init_rx: mpsc::Receiver<Channel<ChannelEvent>>,
-    mut topic_rx: mpsc::Receiver<FromNetwork>,
-    mut app_rx: mpsc::Receiver<(u64, u16)>,
-    mut system_events_rx: broadcast::Receiver<p2panda_net::SystemEvent<AppTopic>>,
-) -> anyhow::Result<()> {
-    let rt = tokio::runtime::Handle::current();
+fn spawn_node(app: &mut App) -> Result<(), Error> {
+    let app_handle = app.handle().clone();
 
-    rt.spawn(async move {
+    tauri::async_runtime::spawn(async move {
+        let network = build_network().await.expect("build network");
+
+        let mut system_events_rx = network
+            .events()
+            .await
+            .expect("subscribe to network system status event stream");
+
+        let (topic_tx, mut topic_rx, _topic_ready) = network
+            .subscribe(APP_TOPIC)
+            .await
+            .expect("subscribe to topic");
+
+        let (channel_init_tx, mut channel_init_rx) = mpsc::channel(32);
+        let (app_tx, mut app_rx) = mpsc::channel(32);
+
+        app_handle.manage(Mutex::new(AppContext {
+            channel_init_tx,
+            network,
+            topic_tx,
+            app_tx,
+        }));
+
         let mut channel = channel_init_rx
-        .recv()
-        .await
-        .expect("channel arrives on channel init receiver");
+            .recv()
+            .await
+            .expect("channel arrives on channel init receiver");
 
         loop {
             tokio::select! {
@@ -159,10 +132,11 @@ async fn forward_to_app_layer(
                 },
                 Some(event) = topic_rx.recv() => {
                     let (timestamp, index): (u64, u16) = match event {
-                        FromNetwork::GossipMessage { ref bytes, delivered_from } => {
+                        FromNetwork::GossipMessage { ref bytes, .. } => {
                             decode_cbor(&bytes[..]).expect("decode message bytes")
                         },
-                        FromNetwork::SyncMessage { header, payload, delivered_from } => todo!(),
+                        // We don't expect to receive any messages via sync.
+                        FromNetwork::SyncMessage { .. } => todo!(),
                     };
 
                         channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
@@ -170,13 +144,31 @@ async fn forward_to_app_layer(
                 Some((timestamp, index)) = app_rx.recv() => {
                     println!("forward message to app: {}", index);
                     channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
-            },
-            Some(new_channel) = channel_init_rx.recv() => {
-                channel = new_channel
-        },
-}
+                },
+                Some(new_channel) = channel_init_rx.recv() => {
+                    channel = new_channel
+                },
+            }
         }
     });
 
     Ok(())
+}
+
+async fn build_network() -> anyhow::Result<Network<AppTopic>> {
+    let private_key = PrivateKey::new();
+
+    let mdns = LocalDiscovery::new();
+    let sync_protocol = sync::DummyProtocol {};
+    let resync_config = ResyncConfiguration::new().interval(10);
+    let sync_config = SyncConfiguration::new(sync_protocol).resync(resync_config);
+
+    let network = NetworkBuilder::new(NETWORK_ID)
+        .discovery(mdns)
+        .sync(sync_config)
+        .private_key(private_key.clone())
+        .build()
+        .await?;
+
+    Ok(network)
 }

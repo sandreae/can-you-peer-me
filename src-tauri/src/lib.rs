@@ -1,12 +1,18 @@
+mod sync;
+
 use std::hash::Hash as StdHash;
 
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::PrivateKey;
 use p2panda_discovery::mdns::LocalDiscovery;
-use p2panda_net::{FromNetwork, Network, NetworkBuilder, ToNetwork, TopicId};
+use p2panda_net::{
+    FromNetwork, Network, NetworkBuilder, ResyncConfiguration, SyncConfiguration, ToNetwork,
+    TopicId,
+};
 use p2panda_sync::TopicQuery;
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
-use tauri::{ipc::Channel, AppHandle, Builder, Manager, State};
-use thiserror::Error;
+use tauri::ipc::Channel;
+use tauri::{Builder, Error, Manager, State};
 use tokio::sync::{broadcast, mpsc, Mutex};
 
 static network_id: [u8; 32] = [0; 32];
@@ -24,7 +30,7 @@ impl TopicId for AppTopic {
 impl TopicQuery for AppTopic {}
 
 struct AppContext {
-    channel: Option<Channel<ChannelEvent>>,
+    channel_init_tx: mpsc::Sender<Channel<ChannelEvent>>,
     network: Network<AppTopic>,
     topic_tx: mpsc::Sender<ToNetwork>,
     app_tx: mpsc::Sender<(u64, u16)>,
@@ -34,16 +40,24 @@ struct AppContext {
 async fn init(
     state: State<'_, Mutex<AppContext>>,
     channel: Channel<ChannelEvent>,
-) -> Result<(), InitError> {
-    let mut state = state.lock().await;
-    state.channel = Some(channel);
+) -> Result<(), Error> {
+    let state = state.lock().await;
+    state
+        .channel_init_tx
+        .send(channel)
+        .await
+        .expect("send on init channel");
 
     Ok(())
 }
 
 #[tauri::command]
-async fn broadcast(state: State<'_, Mutex<AppContext>>, timestamp: u64, index: u16) -> Result<(), InitError> {
-    let mut state = state.lock().await;
+async fn broadcast(
+    state: State<'_, Mutex<AppContext>>,
+    timestamp: u64,
+    index: u16,
+) -> Result<(), Error> {
+    let state = state.lock().await;
     let message = (timestamp, index);
     state
         .app_tx
@@ -53,7 +67,7 @@ async fn broadcast(state: State<'_, Mutex<AppContext>>, timestamp: u64, index: u
     state
         .topic_tx
         .send(ToNetwork::Message {
-            bytes: serde_json::to_vec(&message).expect("encode message as vec"),
+            bytes: encode_cbor(&message).expect("encode message"),
         })
         .await
         .expect("send on topic_tx channel");
@@ -73,9 +87,13 @@ pub fn run() {
                 let private_key = PrivateKey::new();
 
                 let mdns = LocalDiscovery::new();
+                let sync_protocol = sync::DummyProtocol {};
+                let resync_config = ResyncConfiguration::new().interval(10);
+                let sync_config = SyncConfiguration::new(sync_protocol).resync(resync_config);
 
                 let network = NetworkBuilder::new(network_id)
                     .discovery(mdns)
+                    .sync(sync_config)
                     .private_key(private_key.clone())
                     .build()
                     .await
@@ -91,17 +109,18 @@ pub fn run() {
                     .await
                     .expect("subscribe to topic");
 
+                let (channel_init_tx, channel_init_rx) = mpsc::channel(32);
                 let (app_tx, app_rx) = mpsc::channel(32);
 
                 app_handle.manage(Mutex::new(AppContext {
-                    channel: None,
+                    channel_init_tx,
                     network,
                     topic_tx,
                     app_tx,
                 }));
 
                 if let Err(err) =
-                    forward_to_app_layer(app_handle, topic_rx, app_rx, system_events_rx).await
+                    forward_to_app_layer(channel_init_rx, topic_rx, app_rx, system_events_rx).await
                 {
                     panic!("failed to start node receiver task: {err}")
                 };
@@ -117,7 +136,7 @@ pub fn run() {
 
 /// Task for receiving data from network and forwarding them up to the app layer.
 async fn forward_to_app_layer(
-    app_handle: AppHandle,
+    mut channel_init_rx: mpsc::Receiver<Channel<ChannelEvent>>,
     mut topic_rx: mpsc::Receiver<FromNetwork>,
     mut app_rx: mpsc::Receiver<(u64, u16)>,
     mut system_events_rx: broadcast::Receiver<p2panda_net::SystemEvent<AppTopic>>,
@@ -125,55 +144,43 @@ async fn forward_to_app_layer(
     let rt = tokio::runtime::Handle::current();
 
     rt.spawn(async move {
+        let mut channel = channel_init_rx
+        .recv()
+        .await
+        .expect("channel arrives on channel init receiver");
+
         loop {
             tokio::select! {
                 Ok(event) = system_events_rx.recv() => {
-                    let state = app_handle.state::<Mutex<AppContext>>();
-                    let lock = state.lock().await;        
-                    if let Some(channel) = &lock.channel {
                         channel.send(ChannelEvent::SystemEvent(SystemEvent(event))).expect("send on app channel");
-                    }
                 },
                 Some(event) = topic_rx.recv() => {
-                    let state = app_handle.state::<Mutex<AppContext>>();
-                    let lock = state.lock().await;        
                     let (timestamp, index): (u64, u16) = match event {
                         FromNetwork::GossipMessage { ref bytes, delivered_from } => {
-                            serde_json::from_slice(bytes).expect("decode message bytes")
+                            decode_cbor(&bytes[..]).expect("decode message bytes")
                         },
                         FromNetwork::SyncMessage { header, payload, delivered_from } => todo!(),
                     };
 
-                    if let Some(channel) = &lock.channel {
                         channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
-                    }
                 },
                 Some((timestamp, index)) = app_rx.recv() => {
-                    let state = app_handle.state::<Mutex<AppContext>>();
-                    let lock = state.lock().await;        
-                    if let Some(channel) = &lock.channel {
-                        println!("forward message to app: {}", index);
-                        channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
-                    }
-                },
-            }
+                    println!("forward message to app: {}", index);
+                    channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
+            },
+            Some(new_channel) = channel_init_rx.recv() => {
+                channel = new_channel
+        },
+}
         }
     });
 
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum StreamEvent {
-    Message,
-}
-
 #[derive(Debug, Clone)]
 enum ChannelEvent {
-    SamplePlayed{
-        timestamp: u64,
-        index: u16
-    },
+    SamplePlayed { timestamp: u64, index: u16 },
     SystemEvent(SystemEvent),
 }
 
@@ -183,7 +190,10 @@ impl Serialize for ChannelEvent {
         S: serde::Serializer,
     {
         match *self {
-            ChannelEvent::SamplePlayed{ ref timestamp, ref index} => {
+            ChannelEvent::SamplePlayed {
+                ref timestamp,
+                ref index,
+            } => {
                 let mut state = serializer.serialize_struct("ChannelEvent", 2)?;
                 state.serialize_field("type", "SamplePlayed")?;
                 state.serialize_field("timestamp", timestamp)?;
@@ -265,15 +275,4 @@ impl Serialize for SystemEvent {
             }
         }
     }
-}
-
-struct TopicMap {}
-
-#[derive(Clone, Debug, Error, Serialize, Deserialize)]
-enum InitError {
-    #[error("oneshot channel receiver closed")]
-    OneshotChannelError,
-
-    #[error("stream channel already set")]
-    SetStreamChannelError,
 }

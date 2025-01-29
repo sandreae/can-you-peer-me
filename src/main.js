@@ -1,9 +1,14 @@
 const { invoke, Channel } = window.__TAURI__.core;
 
-const peers = [];
-let syncSource;
+const peers = new Object();
 
 async function init() {
+  // Load all samples
+  samplePaths.forEach(async (path, index) => {
+    console.log("load sample", path);
+    await loadSample(path, index);
+  });
+
   // Create the stream channel to be passed to backend and add an `onMessage`
   // callback method to handle any events which are later sent from the
   // backend to here.
@@ -16,6 +21,7 @@ async function init() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  console.log("init");
   init();
 });
 
@@ -41,13 +47,17 @@ const samplePaths = [
   "./assets/528669__kjose__metalpot_edgeslap.flac",
   "./assets/771248__olehenriksen__kitchen-faucet-water-tap-running-water-sound.wav",
   "./assets/609725__theplax__microwave-ping.wav",
+  "./assets/431117__inspectorj__door-front-opening-a.wav",
+  "./assets/90030__tewell__oneascendingquack.wav",
+  "./assets/442820__qubodup__duck-quack.wav",
+  "./assets/196124__enma-darei__dropped-stuff.wav",
 ];
 
 // Array to hold the audio buffers
 const audioBuffers = [];
 
 // Function to load an audio sample
-function loadSample(url, index) {
+async function loadSample(url, index) {
   fetch(url)
     .then((response) => response.arrayBuffer())
     .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
@@ -57,15 +67,12 @@ function loadSample(url, index) {
     .catch((error) => console.error("Error loading sample:", error));
 }
 
-// Load all samples
-samplePaths.forEach((path, index) => loadSample(path, index));
-
 // Function to play a sample
 function playSample(index) {
   const source = audioContext.createBufferSource();
   source.buffer = audioBuffers[index];
   source.connect(audioContext.destination);
-  source.start();
+  source.start(audioContext.currentTime, 0, 5);
   return source;
 }
 
@@ -92,36 +99,47 @@ function processor(message) {
 function handleSystemEvent(event) {
   switch (event.type) {
     case "GossipJoined":
+      playSample(17);
       break;
 
     case "GossipLeft":
       break;
 
     case "GossipNeighborUp":
+      console.log(event);
+      playSample(18);
       break;
 
     case "GossipNeighborDown":
-      // Add logic to handle GossipNeighborDown
+      console.log(event);
+      playSample(19);
       break;
 
     case "PeerDiscovered":
-      if (peers.find((peer) => (event.peer = peer))) {
+      if (peers[event.peer]) {
         break;
       } else {
-        peers.push(event.peer);
+        peers[event.peer] = new Array();
         playSample(16);
       }
       break;
 
     case "SyncStarted":
-      syncSource = playSample(15);
+      if (event.topic != null) {
+        peers[event.peer].push(playSample(15));
+      }
       break;
 
     case "SyncDone":
-      syncSource.stop();
+      const source = peers[event.peer].shift();
+      if (source != undefined) {
+        source.stop(0);
+        source.disconnect();
+      }
       break;
 
     case "SyncFailed":
+      playSample(20);
       break;
 
     default:

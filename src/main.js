@@ -81,8 +81,8 @@ function publish(index) {
 // Processor which should handle all events arriving from the backend node
 function processor(message) {
   switch (message.type) {
-    case "SamplePlayed": {
-      handleAppEvent(message);
+    case "ApplicationMessage": {
+      handleAppEvent(message.data);
       break;
     }
     case "SystemEvent": {
@@ -94,8 +94,8 @@ function processor(message) {
 
 // Handler for application events
 function handleAppEvent(event) {
-  console.log("Hit: ", event.index);
-  playSample(event.index);
+  console.log(event);
+  playSample(event.sample_index);
 }
 
 // Handler for system events

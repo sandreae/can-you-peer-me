@@ -16,7 +16,7 @@ use tauri::ipc::Channel;
 use tauri::{App, Builder, Error, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 
-use messages::{ChannelEvent, SystemEvent};
+use messages::{ApplicationMessage, ChannelEvent, SystemEvent};
 
 static NETWORK_ID: [u8; 32] = [0; 32];
 static APP_TOPIC: AppTopic = AppTopic([1; 32]);
@@ -98,7 +98,10 @@ fn spawn_node(app: &mut App) -> Result<(), Error> {
     let app_handle = app.handle().clone();
 
     tauri::async_runtime::spawn(async move {
-        let network = build_network().await.expect("build network");
+        let private_key = PrivateKey::new();
+        let network = build_network(private_key.clone())
+            .await
+            .expect("build network");
 
         let mut system_events_rx = network
             .events()
@@ -139,11 +142,19 @@ fn spawn_node(app: &mut App) -> Result<(), Error> {
                         FromNetwork::SyncMessage { .. } => todo!(),
                     };
 
-                        channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
+                        channel.send(ChannelEvent::ApplicationMessage(ApplicationMessage {
+                            timestamp,
+                            sample_index: index,
+                            public_key: private_key.public_key()
+                        })).expect("send on app channel");
                 },
                 Some((timestamp, index)) = app_rx.recv() => {
                     println!("forward message to app: {}", index);
-                    channel.send(ChannelEvent::SamplePlayed{timestamp, index}).expect("send on app channel");
+                    channel.send(ChannelEvent::ApplicationMessage(ApplicationMessage {
+                        timestamp,
+                        sample_index: index,
+                        public_key: private_key.public_key()
+                    })).expect("send on app channel");
                 },
                 Some(new_channel) = channel_init_rx.recv() => {
                     channel = new_channel
@@ -155,9 +166,7 @@ fn spawn_node(app: &mut App) -> Result<(), Error> {
     Ok(())
 }
 
-async fn build_network() -> anyhow::Result<Network<AppTopic>> {
-    let private_key = PrivateKey::new();
-
+async fn build_network(private_key: PrivateKey) -> anyhow::Result<Network<AppTopic>> {
     let mdns = LocalDiscovery::new();
     let sync_protocol = sync::DummyProtocol {};
     let resync_config = ResyncConfiguration::new().interval(10);

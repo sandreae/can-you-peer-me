@@ -76,7 +76,7 @@ async fn publish(
         .await
         .expect("send on topic_tx channel");
 
-    println!("publish message: {}", index);
+    println!("message published: {:?}", message);
 
     Ok(())
 }
@@ -149,7 +149,6 @@ fn spawn_node(app: &mut App) -> Result<(), Error> {
                         })).expect("send on app channel");
                 },
                 Some((timestamp, index)) = app_rx.recv() => {
-                    println!("forward message to app: {}", index);
                     channel.send(ChannelEvent::ApplicationMessage(ApplicationMessage {
                         timestamp,
                         sample_index: index,
